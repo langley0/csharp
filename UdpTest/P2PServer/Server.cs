@@ -5,19 +5,48 @@ using System.Threading;
 using Shared;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.IO;
+using System.Collections.Generic;
+using System.Diagnostics;
 
 namespace P2PServer 
 {
+    public class ClientInfo 
+    {
+        public long Id { get; set; }
+        public bool Authenticated { get; set; }
+        public string Name {get; set; }
+
+        public TcpClient Socket { get; set; }
+        public IPEndPoint ExternalEndPoint { get; set;}
+
+        public Packet ToPacket(Message msg) 
+        {
+            BinaryFormatter formatter = new BinaryFormatter();
+            MemoryStream stream = new MemoryStream();
+            formatter.Serialize(stream, msg);
+            var data = stream.ToArray();
+            return new Packet(Packet.MagicNumber, ++this.sendSequence, msg.Type, data, (ushort)stream.Length);
+        }
+
+        ushort sendSequence = 0;
+    }
+
+
     public class Server 
     {
         const int Port = 7777;
         static long NextId = 0;
 
+        static Dictionary<long, ClientInfo> clients = new Dictionary<long, ClientInfo>();
+
         public static void Start()
         {
             var tcpThread = new Thread(new ThreadStart(TcpListen));
-            var udpThread = new Thread(new ThreadStart(UdpListen));
+            tcpThread.Name = "TcpThread";
             tcpThread.Start();
+
+            var udpThread = new Thread(new ThreadStart(UdpListen));
+            udpThread.Name = "UdpThread";
             udpThread.Start();
 
             while(true)
@@ -44,8 +73,15 @@ namespace P2PServer
                 try 
                 {
                     var client = tcp.AcceptTcpClient();
-                    var clientThread = new Thread(new ThreadStart(delegate () {
-                        var id = ++NextId;
+                    var id = ++NextId;
+                    var info = new ClientInfo();
+                    info.Id = id;
+                    info.Authenticated = false;
+                    info.ExternalEndPoint = null;
+                    info.Socket = client;
+                    clients.Add(id, info);
+
+                    var clientThread = new Thread(() => {
                         try 
                         {
                             while(client.Connected) 
@@ -69,8 +105,9 @@ namespace P2PServer
                         finally 
                         {
                             // disconnect
+                            client.Close();
                         }
-                    }));
+                    });
                     
                     clientThread.Start();
 
@@ -83,16 +120,25 @@ namespace P2PServer
         
         static void HandlePacket(long id, Packet packet) 
         {
+            var info = clients[id];
             var formatter = new BinaryFormatter();
             MemoryStream stream = new MemoryStream(packet.Data, 0, packet.DataLength);
 
             switch(packet.MessageType) {
-                case MessageType.KEEP_ALIVE: {
-                   var msg = (KeepAlive)formatter.Deserialize(stream);
-                   // keep alive 등록을 한다
-                   Console.WriteLine("KeepAlive from {0}", id);
+                case MessageType.AUTH_REQUEST: {
+                    Debug.Assert(info.Authenticated == false)   ;
+                    var msg = (AuthRequest)formatter.Deserialize(stream);
+                    info.Authenticated = true;
+                    info.Name = msg.Name;
+
+                    var reply = new AuthReply() { Id = id, };
+                    var sendPacket = info.ToPacket(reply);
+                    info.Socket.GetStream().Write(sendPacket.ToBytes());
+
+                    Console.WriteLine("Login {0}", info.Name);
                 }
                 break;
+               
             }
         }
 
@@ -112,6 +158,19 @@ namespace P2PServer
                 var receivedBytes = udp.Receive(ref ipEndPoint);
                 
                 // data 를 처리한다
+                var packet = receivedBytes.ToPacket();
+                var formatter = new BinaryFormatter();
+                 MemoryStream stream = new MemoryStream(packet.Data, 0, packet.DataLength);
+
+
+                switch(packet.MessageType) {
+                    case MessageType.KEEP_ALIVE: {
+                        var msg = (KeepAlive)formatter.Deserialize(stream);
+                        // keep alive 등록을 한다
+                        Console.WriteLine("KeepAlive from {0}", ipEndPoint);
+                    }
+                    break;
+                }
             }
         }
 

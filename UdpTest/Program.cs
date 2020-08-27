@@ -13,7 +13,8 @@ namespace UdpTest
             
             var clientThread = new Thread(() => { 
                 var client = new P2PClient.Client();
-                client.Connect("localhost", 7777);
+                client.Name = "Alpha";
+                client.ConnectTcp("localhost", 7777);
             });
             
             serverThread.Start();
@@ -23,6 +24,5 @@ namespace UdpTest
             serverThread.Join();
             clientThread.Join();
         }
-
     }
 }
